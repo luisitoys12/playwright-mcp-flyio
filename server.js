@@ -7,17 +7,17 @@ const MCP_PORT  = 8931;
 const API_TOKEN = process.env.MCP_AUTH_TOKEN ||
   'e164ec1cc27d2ebf784de4e3482a11224e0040e6ea0c4057d9777e486f65f41e';
 
-// ── 1. Arrancar el MCP como proceso hijo ──────────────────────────────────────
+// MCP solo acepta conexiones desde 'localhost' (no 127.0.0.1)
 const mcp = spawn('npx', [
   '@playwright/mcp@latest',
   '--headless',
   '--port', String(MCP_PORT),
-  '--host', '127.0.0.1',
+  '--host', 'localhost',
 ], { stdio: ['ignore', 'inherit', 'inherit'] });
-mcp.on('error', e  => console.error('MCP error:', e.message));
-mcp.on('exit',  c  => console.log ('MCP exit:',  c));
+mcp.on('error', e => console.error('MCP error:', e.message));
+mcp.on('exit',  c => console.log('MCP exit:', c));
 
-// ── 2. Auth helper ────────────────────────────────────────────────────────────
+// Auth helper (Bearer / ?token= / /ruta/TOKEN)
 function extractToken(req) {
   const bearer = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
   if (bearer) return bearer;
@@ -27,26 +27,22 @@ function extractToken(req) {
   return m ? m[2] : '';
 }
 
-// ── 3. Proxy: elimina headers que causan el rechazo ───────────────────────────
+// Proxy hacia MCP interno usando 'localhost'
 function proxyTo(targetPath) {
   return (req, res) => {
-    // Quitar token del query string
-    const url  = new URL(req.url, 'http://x');
+    const url = new URL(req.url, 'http://x');
     url.searchParams.delete('token');
-    // Normalizar path (/sse/TOKEN → /sse)
     const cleanPath = targetPath + (url.search || '');
 
-    // Copiar headers SIN origin, SIN host, SIN authorization
+    // Copiar headers eliminando los que causan rechazo
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) {
       if (['origin', 'host', 'authorization'].includes(k)) continue;
       headers[k] = v;
     }
-    // El MCP acepta conexiones si NO hay header Origin (o si coincide con su host)
-    // Al omitir Origin el MCP no realiza la validacion y deja pasar la peticion.
 
     const opts = {
-      hostname : '127.0.0.1',
+      hostname : 'localhost',   // <-- clave: localhost no 127.0.0.1
       port     : MCP_PORT,
       path     : cleanPath,
       method   : req.method,
@@ -60,13 +56,12 @@ function proxyTo(targetPath) {
     proxy.on('error', err => {
       console.error('proxy error:', err.message);
       if (!res.headersSent)
-        res.status(502).json({ error: 'MCP not ready, retry.' });
+        res.status(502).json({ error: 'MCP not ready, retry in seconds.' });
     });
     req.pipe(proxy, { end: true });
   };
 }
 
-// ── 4. Express con auth ───────────────────────────────────────────────────────
 const app = express();
 
 function auth(req, res, next) {
@@ -82,17 +77,17 @@ app.all('/mcp',        auth, proxyTo('/mcp'));
 app.all('/sse/:token', auth, proxyTo('/sse'));
 app.all('/sse',        auth, proxyTo('/sse'));
 
-// Canal de mensajes SSE
+// Canal mensajes SSE
 app.all('/message/:token', auth, proxyTo('/message'));
 app.all('/message',        auth, proxyTo('/message'));
 
-// Status page
+// Status
 app.get('/', (_req, res) => res.send(
-  '\u{1F3AD} Playwright MCP Server \u2014 OK\n' +
-  'SSE:  /sse?token=TOKEN\n' +
-  'MCP:  /mcp  (Authorization: Bearer TOKEN)\n'
+  '\u{1F3AD} Playwright MCP Server - OK\n' +
+  'SSE : /sse?token=TOKEN\n' +
+  'MCP : /mcp  (Authorization: Bearer TOKEN)\n'
 ));
 
 app.listen(PORT, '0.0.0.0', () =>
-  console.log(`Express en :${PORT} | MCP interno en :${MCP_PORT}`)
+  console.log(`Express :${PORT} | MCP interno en localhost:${MCP_PORT}`)
 );
