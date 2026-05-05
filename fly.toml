@@ -2,7 +2,7 @@ app = "playwright-mcp-kus"
 primary_region = "dfw"
 
 [[services]]
-  internal_port = 8931
+  internal_port = 8080
   protocol = "tcp"
 
   [[services.ports]]
@@ -15,7 +15,7 @@ primary_region = "dfw"
     port = 443
 
   [[services.tcp_checks]]
-    grace_period = "15s"
+    grace_period = "20s"
     interval = "30s"
     restart_limit = 0
     timeout = "5s"
