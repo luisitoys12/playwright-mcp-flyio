@@ -1,5 +1,5 @@
 app = "playwright-mcp-kus"
-primary_region = "mia"
+primary_region = "dfw"
 
 [http_service]
   internal_port = 8931
