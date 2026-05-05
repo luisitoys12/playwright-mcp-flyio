@@ -7,17 +7,18 @@ const PORT = 8080;
 const MCP_PORT = 8931;
 const API_TOKEN = process.env.MCP_AUTH_TOKEN || 'e164ec1cc27d2ebf784de4e3482a11224e0040e6ea0c4057d9777e486f65f41e';
 
-// ── Arrancar MCP interno ──────────────────────────────────────────────────────
+// ── Arrancar MCP interno ────────────────────────────────────────────────────
 const mcp = spawn('npx', [
   '@playwright/mcp@latest',
   '--headless',
   '--port', String(MCP_PORT),
   '--host', '127.0.0.1',
+  '--allowed-origins', '*',       // <── permite que el proxy local conecte
 ], { stdio: 'inherit' });
 mcp.on('error', err => console.error('MCP spawn error:', err));
-mcp.on('exit',  code => console.log('MCP process exited with code:', code));
+mcp.on('exit',  code => { console.log('MCP exited:', code); });
 
-// ── Auth helper ───────────────────────────────────────────────────────────────
+// ── Auth helper ─────────────────────────────────────────────────────────────
 function extractToken(req) {
   return (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim()
     || req.query.token
@@ -29,10 +30,9 @@ function auth(req, res, next) {
   res.status(401).json({ error: 'Unauthorized.' });
 }
 
-// ── Proxy genérico (soporta SSE streaming y POST normal) ─────────────────────
+// ── Proxy genérico ──────────────────────────────────────────────────────────
 function proxyTo(targetPath) {
   return (req, res) => {
-    // Quitar token del query para no mandarlo al MCP interno
     const { token, ...rest } = req.query;
     const qs = new URLSearchParams(rest).toString();
     const path = targetPath + (qs ? '?' + qs : '');
@@ -44,40 +44,35 @@ function proxyTo(targetPath) {
       method   : req.method,
       headers  : {
         ...req.headers,
-        host   : 'localhost',
-        origin : 'http://localhost',
+        host   : '127.0.0.1',
+        origin : 'http://127.0.0.1',   // <── origin que acepta el MCP
       },
     };
-    // Limpiar cabeceras que no deben llegar al MCP
     delete opts.headers['authorization'];
 
     const proxy = http.request(opts, mcpRes => {
       res.writeHead(mcpRes.statusCode, mcpRes.headers);
       mcpRes.pipe(res);
     });
-
     proxy.on('error', err => {
       console.error('Proxy error:', err.message);
-      if (!res.headersSent) {
-        res.status(502).json({ error: 'MCP not ready yet, retry in a few seconds.' });
-      }
+      if (!res.headersSent)
+        res.status(502).json({ error: 'MCP not ready, retry in a few seconds.' });
     });
-
     req.pipe(proxy, { end: true });
   };
 }
 
-// ── Rutas públicas (3 formas de auth) ─────────────────────────────────────────
+// ── Rutas (3 formas de auth) ─────────────────────────────────────────────────
+// Streamable HTTP moderno — Claude Desktop, Cursor, Copilot, n8n
+app.all('/mcp/:token', auth, proxyTo('/mcp'));
+app.all('/mcp',        auth, proxyTo('/mcp'));
 
-// 1. /mcp  — Streamable HTTP moderno (Claude Desktop, Cursor, Copilot, n8n)
-app.all('/mcp/:token',  auth, proxyTo('/mcp'));
-app.all('/mcp',         auth, proxyTo('/mcp'));
+// SSE legacy — Perplexity Pro y otros LLMs
+app.all('/sse/:token', auth, proxyTo('/sse'));
+app.all('/sse',        auth, proxyTo('/sse'));
 
-// 2. /sse  — Legacy SSE (Perplexity Pro, clientes antiguos)
-app.all('/sse/:token',  auth, proxyTo('/sse'));
-app.all('/sse',         auth, proxyTo('/sse'));
-
-// 3. /message — canal de mensajes del protocolo MCP SSE
+// Canal de mensajes SSE
 app.all('/message/:token', auth, proxyTo('/message'));
 app.all('/message',        auth, proxyTo('/message'));
 
@@ -115,24 +110,21 @@ app.get('/', (_req, res) => {
   <div class="badge"><span class="dot"></span> Servidor activo &mdash; Dallas (dfw)</div>
   <h1>&#127917; Playwright <span>MCP Server</span></h1>
   <p class="sub">Automatizaci&#243;n remota de navegador Chromium headless v&#237;a MCP.<br>Compatible con Perplexity Pro, Claude, n8n, Composio, Cursor y GitHub Copilot.</p>
-
   <div class="section">
-    <h2>&#9889; Streamable HTTP <span class="tag green">MODERNO</span> &nbsp;&#8212;&nbsp; /mcp</h2>
-    <div class="ep-label">Token en path (Perplexity, Composio)</div>
+    <h2>&#9889; Streamable HTTP <span class="tag green">MODERNO</span> &mdash; /mcp</h2>
+    <div class="ep-label">Token en path</div>
     <div class="endpoint">https://playwright-mcp-kus.fly.dev/mcp/TOKEN</div>
-    <div class="ep-label">Bearer header (Claude Desktop, Cursor)</div>
+    <div class="ep-label">Bearer header</div>
     <div class="endpoint">https://playwright-mcp-kus.fly.dev/mcp</div>
   </div>
-
   <div class="section">
-    <h2>&#128268; SSE Legacy <span class="tag">LEGACY</span> &nbsp;&#8212;&nbsp; /sse</h2>
-    <div class="ep-label">Token en path</div>
+    <h2>&#128268; SSE Legacy <span class="tag">LEGACY</span> &mdash; /sse</h2>
+    <div class="ep-label">Token en path (Perplexity Pro)</div>
     <div class="endpoint">https://playwright-mcp-kus.fly.dev/sse/TOKEN</div>
     <div class="ep-label">Query param</div>
     <div class="endpoint">https://playwright-mcp-kus.fly.dev/sse?token=TOKEN</div>
   </div>
-
-  <div class="section"><h2>&#128295; Herramientas disponibles</h2><div class="tools">
+  <div class="section"><h2>&#128295; Herramientas</h2><div class="tools">
     <span class="tool">browser_navigate</span><span class="tool">browser_click</span>
     <span class="tool">browser_fill</span><span class="tool">browser_screenshot</span>
     <span class="tool">browser_get_text</span><span class="tool">browser_evaluate</span>
@@ -140,21 +132,16 @@ app.get('/', (_req, res) => {
     <span class="tool">browser_hover</span><span class="tool">browser_select</span>
     <span class="tool">browser_snapshot</span><span class="tool">browser_close</span>
   </div></div>
-
   <div class="auth-note">&#128274; <strong>3 formas de autenticar:</strong><br>
-    <strong>1. Path:</strong> <code>/mcp/TU_TOKEN</code> o <code>/sse/TU_TOKEN</code><br>
-    <strong>2. Query:</strong> <code>?token=TU_TOKEN</code><br>
-    <strong>3. Header:</strong> <code>Authorization: Bearer TU_TOKEN</code>
+    <strong>1. Path:</strong> <code>/mcp/TOKEN</code> o <code>/sse/TOKEN</code><br>
+    <strong>2. Query:</strong> <code>?token=TOKEN</code><br>
+    <strong>3. Header:</strong> <code>Authorization: Bearer TOKEN</code>
   </div>
-
-  <footer>
-    <a href="https://github.com/luisitoys12/playwright-mcp-flyio" target="_blank">Ver en GitHub</a>
-    &bull; EstacionKUS Medios &copy; 2026
-  </footer>
+  <footer><a href="https://github.com/luisitoys12/playwright-mcp-flyio" target="_blank">Ver en GitHub</a> &bull; EstacionKUS Medios &copy; 2026</footer>
 </div></body></html>`);
 });
 
-// ── Arrancar Express ──────────────────────────────────────────────────────────
+// ── Arrancar Express ─────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () =>
   console.log(`Servidor en 0.0.0.0:${PORT} | MCP interno en :${MCP_PORT}`)
 );
