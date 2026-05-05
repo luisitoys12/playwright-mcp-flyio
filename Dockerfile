@@ -2,7 +2,7 @@ FROM mcr.microsoft.com/playwright:v1.52.0-noble
 
 WORKDIR /app
 
-RUN npm init -y && npm install @playwright/mcp@latest express http-proxy-middleware
+RUN npm init -y && npm install @playwright/mcp@latest express
 
 RUN npx playwright install chromium
 RUN npx playwright install-deps chromium

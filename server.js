@@ -1,76 +1,98 @@
-// SOLUCION DEFINITIVA
-// El MCP valida el header Origin contra su propio host:port.
-// Ningun proxy externo puede falsificar eso sin que el MCP lo rechace.
-// Solucion: correr el MCP directamente en 0.0.0.0:8080 con auth propia.
-// Usamos un wrapper que intercepta ANTES de pasar al MCP via createServer.
+const express = require('express');
+const { spawn } = require('child_process');
+const http  = require('http');
 
-const http = require('http');
-const { createServer } = require('@playwright/mcp/lib/index.js');
+const PORT      = 8080;
+const MCP_PORT  = 8931;
+const API_TOKEN = process.env.MCP_AUTH_TOKEN ||
+  'e164ec1cc27d2ebf784de4e3482a11224e0040e6ea0c4057d9777e486f65f41e';
 
-const API_TOKEN = process.env.MCP_AUTH_TOKEN || 'e164ec1cc27d2ebf784de4e3482a11224e0040e6ea0c4057d9777e486f65f41e';
-const PORT = 8080;
+// ── 1. Arrancar el MCP como proceso hijo ──────────────────────────────────────
+const mcp = spawn('npx', [
+  '@playwright/mcp@latest',
+  '--headless',
+  '--port', String(MCP_PORT),
+  '--host', '127.0.0.1',
+], { stdio: ['ignore', 'inherit', 'inherit'] });
+mcp.on('error', e  => console.error('MCP error:', e.message));
+mcp.on('exit',  c  => console.log ('MCP exit:',  c));
 
+// ── 2. Auth helper ────────────────────────────────────────────────────────────
 function extractToken(req) {
-  // 1. Bearer header
-  const auth = req.headers['authorization'] || '';
-  if (auth.startsWith('Bearer ')) return auth.slice(7).trim();
-  // 2. ?token=
-  const url = new URL(req.url, 'http://localhost');
+  const bearer = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+  if (bearer) return bearer;
+  const url = new URL(req.url, 'http://x');
   if (url.searchParams.get('token')) return url.searchParams.get('token');
-  // 3. /sse/TOKEN o /mcp/TOKEN
-  const m = req.url.match(/^\/(sse|mcp|message)\/([^/?]+)/);
-  if (m) return m[2];
-  return '';
+  const m = req.url.match(/^\/(sse|mcp|message)\/([^/?#]+)/);
+  return m ? m[2] : '';
 }
 
-async function main() {
-  // Crear el servidor MCP de Playwright
-  const mcpServer = await createServer({
-    headless: true,
-    port: 0,          // no abre puerto propio
-    launchOptions: { executablePath: '/ms-playwright/chromium-1169/chrome-linux/chrome' },
-  });
+// ── 3. Proxy: elimina headers que causan el rechazo ───────────────────────────
+function proxyTo(targetPath) {
+  return (req, res) => {
+    // Quitar token del query string
+    const url  = new URL(req.url, 'http://x');
+    url.searchParams.delete('token');
+    // Normalizar path (/sse/TOKEN → /sse)
+    const cleanPath = targetPath + (url.search || '');
 
-  // Wrapper HTTP que valida auth antes de delegar al MCP
-  const server = http.createServer((req, res) => {
-    const token = extractToken(req);
-
-    // Pagina publica sin auth
-    if (req.url === '/' || req.url === '') {
-      res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('Playwright MCP Server - OK\n/sse /mcp /message disponibles con token.');
-      return;
+    // Copiar headers SIN origin, SIN host, SIN authorization
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (['origin', 'host', 'authorization'].includes(k)) continue;
+      headers[k] = v;
     }
+    // El MCP acepta conexiones si NO hay header Origin (o si coincide con su host)
+    // Al omitir Origin el MCP no realiza la validacion y deja pasar la peticion.
 
-    if (token !== API_TOKEN) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized' }));
-      return;
-    }
+    const opts = {
+      hostname : '127.0.0.1',
+      port     : MCP_PORT,
+      path     : cleanPath,
+      method   : req.method,
+      headers,
+    };
 
-    // Normalizar la URL quitando el token del path
-    // /sse/TOKEN -> /sse   /mcp/TOKEN -> /mcp
-    req.url = req.url
-      .replace(/^\/(sse|mcp|message)\/[^/?]+/, '/$1')
-      .replace(/[?&]token=[^&]+/, '')
-      .replace(/[?&]$/, '');
-
-    // Fijar origin para que el MCP lo acepte
-    req.headers['origin'] = `http://localhost:${PORT}`;
-    req.headers['host']   = `localhost:${PORT}`;
-
-    // Delegar al handler interno del MCP
-    mcpServer.emit('request', req, res);
-  });
-
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Playwright MCP Server corriendo en 0.0.0.0:${PORT}`);
-    console.log(`SSE:  https://playwright-mcp-kus.fly.dev/sse?token=TOKEN`);
-    console.log(`MCP:  https://playwright-mcp-kus.fly.dev/mcp   (Bearer TOKEN)`);
-  });
+    const proxy = http.request(opts, mcpRes => {
+      res.writeHead(mcpRes.statusCode, mcpRes.headers);
+      mcpRes.pipe(res);
+    });
+    proxy.on('error', err => {
+      console.error('proxy error:', err.message);
+      if (!res.headersSent)
+        res.status(502).json({ error: 'MCP not ready, retry.' });
+    });
+    req.pipe(proxy, { end: true });
+  };
 }
 
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+// ── 4. Express con auth ───────────────────────────────────────────────────────
+const app = express();
+
+function auth(req, res, next) {
+  if (extractToken(req) === API_TOKEN) return next();
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
+// Streamable HTTP moderno
+app.all('/mcp/:token', auth, proxyTo('/mcp'));
+app.all('/mcp',        auth, proxyTo('/mcp'));
+
+// SSE legacy (Perplexity Pro, Claude, n8n)
+app.all('/sse/:token', auth, proxyTo('/sse'));
+app.all('/sse',        auth, proxyTo('/sse'));
+
+// Canal de mensajes SSE
+app.all('/message/:token', auth, proxyTo('/message'));
+app.all('/message',        auth, proxyTo('/message'));
+
+// Status page
+app.get('/', (_req, res) => res.send(
+  '\u{1F3AD} Playwright MCP Server \u2014 OK\n' +
+  'SSE:  /sse?token=TOKEN\n' +
+  'MCP:  /mcp  (Authorization: Bearer TOKEN)\n'
+));
+
+app.listen(PORT, '0.0.0.0', () =>
+  console.log(`Express en :${PORT} | MCP interno en :${MCP_PORT}`)
+);
