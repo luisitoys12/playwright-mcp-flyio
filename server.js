@@ -7,20 +7,21 @@ const PORT = 8080;
 const MCP_PORT = 8931;
 const API_TOKEN = process.env.MCP_AUTH_TOKEN || 'e164ec1cc27d2ebf784de4e3482a11224e0040e6ea0c4057d9777e486f65f41e';
 
-// Arrancar el proceso de Playwright MCP en background
+// Arrancar Playwright MCP con allowed-origins para permitir proxy interno
 const mcp = spawn('npx', [
   '@playwright/mcp@latest',
   '--headless',
   '--port', String(MCP_PORT),
-  '--host', '127.0.0.1'
+  '--host', '127.0.0.1',
+  '--allowed-origins', '*'
 ], { stdio: 'inherit' });
 
 mcp.on('error', (err) => console.error('MCP error:', err));
+mcp.on('exit', (code) => console.log('MCP process exited with code:', code));
 
-// Esperar 3 segundos a que MCP arranque
-setTimeout(() => console.log('MCP Playwright listo en puerto', MCP_PORT), 3000);
+console.log('Arrancando Playwright MCP...');
 
-// ── Middleware de autenticacion para /sse ──────────────────────────
+// Middleware de autenticacion
 function authMiddleware(req, res, next) {
   const auth = req.headers['authorization'] || '';
   const queryToken = req.query.token || '';
@@ -29,19 +30,31 @@ function authMiddleware(req, res, next) {
   res.status(401).json({ error: 'Unauthorized. Provide a valid Bearer token or ?token= param.' });
 }
 
-// ── Proxy SSE protegido ───────────────────────────────────────────
+// Proxy SSE protegido — reescribir el header Host para que MCP acepte
 app.use('/sse', authMiddleware, createProxyMiddleware({
   target: `http://127.0.0.1:${MCP_PORT}`,
   changeOrigin: true,
   ws: true,
+  on: {
+    proxyReq: (proxyReq) => {
+      proxyReq.setHeader('Host', 'localhost');
+      proxyReq.setHeader('Origin', 'http://localhost');
+    }
+  }
 }));
 
 app.use('/message', authMiddleware, createProxyMiddleware({
   target: `http://127.0.0.1:${MCP_PORT}`,
   changeOrigin: true,
+  on: {
+    proxyReq: (proxyReq) => {
+      proxyReq.setHeader('Host', 'localhost');
+      proxyReq.setHeader('Origin', 'http://localhost');
+    }
+  }
 }));
 
-// ── Pagina de bienvenida publica ──────────────────────────────────
+// Pagina de bienvenida publica
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="es">
@@ -83,15 +96,13 @@ app.get('/', (req, res) => {
 <body>
   <div class="card">
     <div class="badge"><span class="dot"></span> Servidor activo</div>
-    <h1>🎭 Playwright <span>MCP Server</span></h1>
-    <p class="sub">Servidor MCP remoto con automatización real de navegador (Chromium headless).
+    <h1>\ud83c\udfad Playwright <span>MCP Server</span></h1>
+    <p class="sub">Servidor MCP remoto con automatizaci\u00f3n real de navegador (Chromium headless).
     Permite a agentes de IA navegar, extraer datos, llenar formularios y tomar screenshots.</p>
-
     <div class="section">
       <h2>Endpoint SSE</h2>
       <div class="endpoint">https://playwright-mcp-kus.fly.dev/sse</div>
     </div>
-
     <div class="section">
       <h2>Herramientas disponibles</h2>
       <div class="tools">
@@ -107,23 +118,20 @@ app.get('/', (req, res) => {
         <span class="tool">browser_scroll</span>
       </div>
     </div>
-
     <div class="section">
       <h2>Clientes compatibles</h2>
       <div class="tools">
-        <span class="tool">✓ Perplexity Pro</span>
-        <span class="tool">✓ Claude Desktop</span>
-        <span class="tool">✓ Composio</span>
-        <span class="tool">✓ n8n</span>
-        <span class="tool">✓ Cursor</span>
+        <span class="tool">\u2713 Perplexity Pro</span>
+        <span class="tool">\u2713 Claude Desktop</span>
+        <span class="tool">\u2713 Composio</span>
+        <span class="tool">\u2713 n8n</span>
+        <span class="tool">\u2713 Cursor</span>
       </div>
     </div>
-
     <div class="auth-note">
-      🔒 <strong>Autenticación requerida.</strong> Agrega el header:<br>
+      \ud83d\udd12 <strong>Autenticaci\u00f3n requerida.</strong> Agrega el header:<br>
       <code>Authorization: Bearer &lt;tu-token&gt;</code>
     </div>
-
     <footer>
       Desplegado en Fly.io &mdash; Dallas (dfw) &bull;
       <a href="https://github.com/luisitoys12/playwright-mcp-flyio" target="_blank">Ver en GitHub</a>
