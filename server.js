@@ -7,18 +7,21 @@ const PORT = 8080;
 const MCP_PORT = 8931;
 const API_TOKEN = process.env.MCP_AUTH_TOKEN || 'e164ec1cc27d2ebf784de4e3482a11224e0040e6ea0c4057d9777e486f65f41e';
 
-// ── Arrancar MCP interno ────────────────────────────────────────────────────
+// En v0.0.47+ el MCP elimino --allowed-origins como flag de servidor.
+// Solucion: arrancar el MCP en 127.0.0.1 Y pasar el origin correcto desde el proxy.
+// El MCP acepta conexiones si el header Origin coincide con su propio host:port.
+const MCP_ORIGIN = `http://127.0.0.1:${MCP_PORT}`;
+
 const mcp = spawn('npx', [
   '@playwright/mcp@latest',
   '--headless',
   '--port', String(MCP_PORT),
   '--host', '127.0.0.1',
-  '--allowed-origins', '*',       // <── permite que el proxy local conecte
 ], { stdio: 'inherit' });
 mcp.on('error', err => console.error('MCP spawn error:', err));
-mcp.on('exit',  code => { console.log('MCP exited:', code); });
+mcp.on('exit',  code => console.log('MCP exited:', code));
 
-// ── Auth helper ─────────────────────────────────────────────────────────────
+// Auth helper (Bearer / ?token= / /path/token)
 function extractToken(req) {
   return (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim()
     || req.query.token
@@ -30,25 +33,29 @@ function auth(req, res, next) {
   res.status(401).json({ error: 'Unauthorized.' });
 }
 
-// ── Proxy genérico ──────────────────────────────────────────────────────────
+// Proxy: reescribe host y origin para que el MCP acepte la conexion
 function proxyTo(targetPath) {
   return (req, res) => {
     const { token, ...rest } = req.query;
     const qs = new URLSearchParams(rest).toString();
     const path = targetPath + (qs ? '?' + qs : '');
 
+    // Construir headers limpios — sin authorization, con origin correcto
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (k === 'authorization') continue;
+      headers[k] = v;
+    }
+    headers['host']   = `127.0.0.1:${MCP_PORT}`;
+    headers['origin'] = MCP_ORIGIN;
+
     const opts = {
       hostname : '127.0.0.1',
       port     : MCP_PORT,
       path,
       method   : req.method,
-      headers  : {
-        ...req.headers,
-        host   : '127.0.0.1',
-        origin : 'http://127.0.0.1',   // <── origin que acepta el MCP
-      },
+      headers,
     };
-    delete opts.headers['authorization'];
 
     const proxy = http.request(opts, mcpRes => {
       res.writeHead(mcpRes.statusCode, mcpRes.headers);
@@ -63,7 +70,6 @@ function proxyTo(targetPath) {
   };
 }
 
-// ── Rutas (3 formas de auth) ─────────────────────────────────────────────────
 // Streamable HTTP moderno — Claude Desktop, Cursor, Copilot, n8n
 app.all('/mcp/:token', auth, proxyTo('/mcp'));
 app.all('/mcp',        auth, proxyTo('/mcp'));
@@ -72,11 +78,11 @@ app.all('/mcp',        auth, proxyTo('/mcp'));
 app.all('/sse/:token', auth, proxyTo('/sse'));
 app.all('/sse',        auth, proxyTo('/sse'));
 
-// Canal de mensajes SSE
+// Canal de mensajes del protocolo SSE
 app.all('/message/:token', auth, proxyTo('/message'));
 app.all('/message',        auth, proxyTo('/message'));
 
-// ── Página de estado ─────────────────────────────────────────────────────────
+// Pagina de estado
 app.get('/', (_req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="es">
@@ -141,7 +147,6 @@ app.get('/', (_req, res) => {
 </div></body></html>`);
 });
 
-// ── Arrancar Express ─────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () =>
-  console.log(`Servidor en 0.0.0.0:${PORT} | MCP interno en :${MCP_PORT}`)
+  console.log(`Servidor en 0.0.0.0:${PORT} | MCP interno en :${MCP_PORT} | origin esperado: ${MCP_ORIGIN}`)
 );
