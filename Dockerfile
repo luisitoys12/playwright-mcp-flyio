@@ -2,12 +2,13 @@ FROM mcr.microsoft.com/playwright:v1.52.0-noble
 
 WORKDIR /app
 
-RUN npm init -y && npm install @playwright/mcp
+# Instalar dependencias
+RUN npm init -y && \
+    npm install @playwright/mcp express http-proxy-middleware
 
-EXPOSE 8931
+COPY server.js .
 
-# --host 0.0.0.0 es CLAVE para que Fly.io lo exponga publicamente
-CMD ["npx", "@playwright/mcp@latest", \
-     "--headless", \
-     "--port", "8931", \
-     "--host", "0.0.0.0"]
+EXPOSE 8080
+
+# Arrancamos nuestro servidor proxy (no el MCP directamente)
+CMD ["node", "server.js"]

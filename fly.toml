@@ -2,14 +2,14 @@ app = "playwright-mcp-kus"
 primary_region = "dfw"
 
 [http_service]
-  internal_port = 8931
+  internal_port = 8080
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0
 
   [[http_service.checks]]
-    grace_period = "10s"
+    grace_period = "15s"
     interval = "30s"
     method = "GET"
     path = "/"
