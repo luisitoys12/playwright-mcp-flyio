@@ -2,10 +2,12 @@ FROM mcr.microsoft.com/playwright:v1.52.0-noble
 
 WORKDIR /app
 
-RUN npm init -y && npm install @playwright/mcp@latest express
+# Copiar package.json primero para aprovechar cache de Docker
+COPY package.json .
+RUN npm install --omit=dev
 
-RUN npx playwright install chromium
-RUN npx playwright install-deps chromium
+# La imagen de Microsoft Playwright ya trae Chromium instalado
+# NO hace falta npx playwright install — evita duplicados y errores de ruta
 
 COPY server.js .
 

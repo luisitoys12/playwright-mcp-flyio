@@ -4,10 +4,15 @@ const http  = require('http');
 
 const PORT      = 8080;
 const MCP_PORT  = 8931;
-const API_TOKEN = process.env.MCP_AUTH_TOKEN ||
-  'e164ec1cc27d2ebf784de4e3482a11224e0040e6ea0c4057d9777e486f65f41e';
 
-// MCP solo acepta conexiones desde 'localhost' (no 127.0.0.1)
+// Token leido desde variable de entorno — NUNCA hardcodear en código
+const API_TOKEN = process.env.MCP_AUTH_TOKEN;
+if (!API_TOKEN) {
+  console.error('ERROR: MCP_AUTH_TOKEN env var no definida. Deteniéndose.');
+  process.exit(1);
+}
+
+// Arrancar proceso MCP interno en headless
 const mcp = spawn('npx', [
   '@playwright/mcp@latest',
   '--headless',
@@ -34,7 +39,6 @@ function proxyTo(targetPath) {
     url.searchParams.delete('token');
     const cleanPath = targetPath + (url.search || '');
 
-    // Copiar headers eliminando los que causan rechazo
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) {
       if (['origin', 'host', 'authorization'].includes(k)) continue;
@@ -42,7 +46,7 @@ function proxyTo(targetPath) {
     }
 
     const opts = {
-      hostname : 'localhost',   // <-- clave: localhost no 127.0.0.1
+      hostname : 'localhost',
       port     : MCP_PORT,
       path     : cleanPath,
       method   : req.method,
@@ -80,6 +84,9 @@ app.all('/sse',        auth, proxyTo('/sse'));
 // Canal mensajes SSE
 app.all('/message/:token', auth, proxyTo('/message'));
 app.all('/message',        auth, proxyTo('/message'));
+
+// Health check
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // Status
 app.get('/', (_req, res) => res.send(

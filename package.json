@@ -1,0 +1,13 @@
+{
+  "name": "playwright-mcp-flyio",
+  "version": "1.0.0",
+  "description": "Playwright MCP Server on Fly.io",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@playwright/mcp": "latest",
+    "express": "^4.19.2"
+  }
+}
