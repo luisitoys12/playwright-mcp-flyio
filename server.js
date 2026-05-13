@@ -1,23 +1,58 @@
 const express = require('express');
 const { spawn } = require('child_process');
-const http  = require('http');
+const http     = require('http');
+const crypto   = require('crypto');
 
-const PORT      = 8080;
-const MCP_PORT  = 8931;
-const API_TOKEN = process.env.MCP_AUTH_TOKEN ||
-  'e164ec1cc27d2ebf784de4e3482a11224e0040e6ea0c4057d9777e486f65f41e';
+const PORT     = 8080;
+const MCP_PORT = 8931;
 
-// MCP solo acepta conexiones desde 'localhost' (no 127.0.0.1)
+// Si no hay token en env, genera uno aleatorio de 32 bytes (64 hex chars)
+// y lo muestra en los logs al arrancar → úsalo para conectar tu MCP client
+const API_TOKEN = process.env.MCP_AUTH_TOKEN || crypto.randomBytes(32).toString('hex');
+
+// Detectar host público (Fly.io inyecta FLY_APP_NAME)
+const APP_HOST = process.env.FLY_APP_NAME
+  ? `https://${process.env.FLY_APP_NAME}.fly.dev`
+  : `http://localhost:${PORT}`;
+
+// ─── Mostrar URLs de conexión al iniciar ─────────────────────────────────────
+function printConnectionInfo() {
+  const border = '═'.repeat(60);
+  console.log('\n' + border);
+  console.log('🎭  PLAYWRIGHT MCP SERVER — LISTO');
+  console.log(border);
+  if (!process.env.MCP_AUTH_TOKEN) {
+    console.log('⚠️  MCP_AUTH_TOKEN no configurado → token generado automáticamente');
+    console.log('   (cada reinicio genera un token nuevo)');
+    console.log('   Para token fijo: fly secrets set MCP_AUTH_TOKEN=<tu-token>');
+    console.log('');
+  }
+  console.log('🔑  TOKEN:', API_TOKEN);
+  console.log('');
+  console.log('📡  URLs de conexión:');
+  console.log(`   SSE (legacy):        ${APP_HOST}/sse?token=${API_TOKEN}`);
+  console.log(`   SSE (en path):       ${APP_HOST}/sse/${API_TOKEN}`);
+  console.log(`   Streamable HTTP:     ${APP_HOST}/mcp?token=${API_TOKEN}`);
+  console.log('');
+  console.log('🛠️  Configuración en tu MCP client:');
+  console.log('   URL:    ' + APP_HOST + '/sse/' + API_TOKEN);
+  console.log('   ó bien con Header:');
+  console.log('   URL:    ' + APP_HOST + '/sse');
+  console.log('   Header: Authorization: Bearer ' + API_TOKEN);
+  console.log(border + '\n');
+}
+
+// ─── Spawn MCP interno ────────────────────────────────────────────────────────
 const mcp = spawn('npx', [
   '@playwright/mcp@latest',
   '--headless',
   '--port', String(MCP_PORT),
   '--host', 'localhost',
 ], { stdio: ['ignore', 'inherit', 'inherit'] });
-mcp.on('error', e => console.error('MCP error:', e.message));
-mcp.on('exit',  c => console.log('MCP exit:', c));
+mcp.on('error', e => console.error('MCP spawn error:', e.message));
+mcp.on('exit',  c => console.log('MCP exited with code:', c));
 
-// Auth helper (Bearer / ?token= / /ruta/TOKEN)
+// ─── Auth helper (Bearer / ?token= / /ruta/TOKEN) ─────────────────────────────
 function extractToken(req) {
   const bearer = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
   if (bearer) return bearer;
@@ -27,7 +62,7 @@ function extractToken(req) {
   return m ? m[2] : '';
 }
 
-// Proxy hacia MCP interno usando 'localhost'
+// ─── Proxy hacia MCP interno ──────────────────────────────────────────────────
 function proxyTo(targetPath) {
   return (req, res) => {
     const url = new URL(req.url, 'http://x');
@@ -61,6 +96,7 @@ function proxyTo(targetPath) {
   };
 }
 
+// ─── Express app ──────────────────────────────────────────────────────────────
 const app = express();
 
 function auth(req, res, next) {
@@ -72,7 +108,7 @@ function auth(req, res, next) {
 app.all('/mcp/:token', auth, proxyTo('/mcp'));
 app.all('/mcp',        auth, proxyTo('/mcp'));
 
-// SSE legacy (Perplexity Pro, Claude, n8n)
+// SSE legacy (Claude Desktop, n8n, Perplexity Pro, Cursor)
 app.all('/sse/:token', auth, proxyTo('/sse'));
 app.all('/sse',        auth, proxyTo('/sse'));
 
@@ -80,16 +116,44 @@ app.all('/sse',        auth, proxyTo('/sse'));
 app.all('/message/:token', auth, proxyTo('/message'));
 app.all('/message',        auth, proxyTo('/message'));
 
+// ─── Página de estado (muestra las URLs con el token) ─────────────────────────
+app.get('/', (_req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><title>Playwright MCP</title>
+<style>
+  body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 2rem; }
+  h1 { color: #58a6ff; }
+  .box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
+  .url { color: #56d364; word-break: break-all; }
+  .label { color: #8b949e; font-size: 0.85rem; }
+  .warn { color: #d29922; }
+  code { background: #21262d; padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>🎭 Playwright MCP Server</h1>
+${!process.env.MCP_AUTH_TOKEN ? '<p class="warn">⚠️ Token generado automáticamente (se renueva en cada reinicio). Configura <code>MCP_AUTH_TOKEN</code> para token fijo.</p>' : '<p>✅ Token fijo configurado via variable de entorno.</p>'}
+<div class="box">
+  <p class="label">SSE — Claude Desktop / n8n / Cursor</p>
+  <p class="url">${APP_HOST}/sse/${API_TOKEN}</p>
+</div>
+<div class="box">
+  <p class="label">Streamable HTTP — Clientes modernos MCP</p>
+  <p class="url">${APP_HOST}/mcp?token=${API_TOKEN}</p>
+</div>
+<div class="box">
+  <p class="label">Token actual</p>
+  <code>${API_TOKEN}</code>
+</div>
+<p class="label">Health: <a href="/health" style="color:#58a6ff">/health</a></p>
+</body></html>`);
+});
+
 // Health check
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', app: APP_HOST }));
 
-// Status
-app.get('/', (_req, res) => res.send(
-  '\u{1F3AD} Playwright MCP Server - OK\n' +
-  'SSE : /sse?token=TOKEN\n' +
-  'MCP : /mcp  (Authorization: Bearer TOKEN)\n'
-));
-
-app.listen(PORT, '0.0.0.0', () =>
-  console.log(`Express :${PORT} | MCP interno en localhost:${MCP_PORT}`)
-);
+// ─── Start ────────────────────────────────────────────────────────────────────
+app.listen(PORT, '0.0.0.0', () => {
+  printConnectionInfo();
+});
