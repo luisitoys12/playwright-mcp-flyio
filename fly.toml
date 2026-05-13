@@ -1,4 +1,4 @@
-app = 'playwright-mcp-flyio'
+app = 'playwright-mcp-kus'
 primary_region = 'dfw'
 
 [build]
