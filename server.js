@@ -28,7 +28,6 @@ const SPOTIFY_SCOPES = [
 ].join(' ');
 
 // ─── Spotify token store (en memoria) ────────────────────────────────────────
-// En producción persistente usa un volumen Fly.io o KV store
 let spotifyTokens = {
   access_token  : process.env.SPOTIFY_ACCESS_TOKEN  || null,
   refresh_token : process.env.SPOTIFY_REFRESH_TOKEN || null,
@@ -144,12 +143,23 @@ function printConnectionInfo() {
 }
 
 // ─── Spawn MCP interno ────────────────────────────────────────────────────────
+// La imagen mcr.microsoft.com/playwright guarda los browsers en /ms-playwright
+// Forzamos PLAYWRIGHT_BROWSERS_PATH para que npx @playwright/mcp los encuentre
+const mcpEnv = {
+  ...process.env,
+  PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright',
+  DISPLAY: process.env.DISPLAY || '',
+};
+
 const mcp = spawn('npx', [
   '@playwright/mcp@latest',
   '--headless',
   '--port', String(MCP_PORT),
   '--host', 'localhost',
-], { stdio: ['ignore', 'inherit', 'inherit'] });
+], {
+  stdio: ['ignore', 'inherit', 'inherit'],
+  env: mcpEnv,
+});
 mcp.on('error', e => console.error('MCP spawn error:', e.message));
 mcp.on('exit',  c => console.log('MCP exited:', c));
 
@@ -203,7 +213,6 @@ app.all('/message',        auth, proxyTo('/message'));
 
 // ─── Spotify OAuth routes ────────────────────────────────────────────────────
 
-// GET /spotify/login → genera URL OAuth y redirige
 app.get('/spotify/login', (req, res) => {
   if (!SPOTIFY_CLIENT_ID) {
     return res.status(500).send('❌ SPOTIFY_CLIENT_ID no configurado. Corre: fly secrets set SPOTIFY_CLIENT_ID=xxx');
@@ -221,7 +230,6 @@ app.get('/spotify/login', (req, res) => {
   res.redirect(loginUrl);
 });
 
-// GET /spotify/callback → recibe code, intercambia por tokens
 app.get('/spotify/callback', async (req, res) => {
   const { code, error } = req.query;
   if (error) {
@@ -249,7 +257,6 @@ h1{color:#1DB954;}a{color:#58a6ff;}</style></head><body>
   }
 });
 
-// GET /spotify/status → muestra estado de la sesión
 app.get('/spotify/status', async (req, res) => {
   if (!SPOTIFY_CLIENT_ID) {
     return res.json({ connected: false, reason: 'SPOTIFY_CLIENT_ID no configurado' });
@@ -276,7 +283,6 @@ app.get('/spotify/status', async (req, res) => {
   });
 });
 
-// GET /spotify/token → devuelve access_token actual (para uso interno MCP)
 app.get('/spotify/token', auth, async (req, res) => {
   const token = await getValidAccessToken();
   if (!token) {
